@@ -64,7 +64,10 @@ async function request(path, options = {}) {
   }
 
   if (!res.ok) {
-    const msg = data?.user_message || data?.detail || `Server error (${res.status})`
+    const rawDetail = data?.user_message || data?.detail;
+    const msg = typeof rawDetail === 'string'
+      ? rawDetail
+      : rawDetail?.message || rawDetail?.detail || (rawDetail ? JSON.stringify(rawDetail) : `Server error (${res.status})`);
     throw new Error(msg)
   }
 
