@@ -13,6 +13,7 @@ import { useFetch } from '../../hooks/useFetch';
 import SchoolForm from '../../components/schools/SchoolForm';
 import { SCHOOL_CHAIN_MAP, SCHOOL_TRACKS, deanLabelForTrack, selectedSchoolFormKey, schoolFormPayload, schoolFormLabel, cacheSchoolFormSelection, hydrateSchoolFormSelection } from '../../constants/schoolRoles';
 import { SCHOOLS as LEGACY_SCHOOLS } from '../../constants/schools';
+import { useCustomFormFamilies } from '../../utils/backendFormFamilies';
 
 function Alert({ msg, color = C.red }) {
   if (!msg) return null;
@@ -273,6 +274,7 @@ function LegacyPreview() {
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function SchoolsListPage() {
   const navigate = useNavigate();
+  useCustomFormFamilies();
   const [rev,        setRev]        = useState(0);
   const [deletingId,  setDeletingId]  = useState(null);
   const [deleteError, setDeleteError] = useState('');

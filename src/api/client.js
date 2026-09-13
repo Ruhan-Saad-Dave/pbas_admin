@@ -451,4 +451,12 @@ const developer = {
   }),
 }
 
-export const api = { login, logout, getProfile, verifyMfa, users, stats, feedback, config, cycle, pending, submissions, logs, announcements, ai, export: exportData, marks, workflow, schools, designations, workflowTemplates, profile, developer }
+const formSchemas = {
+  list: () => request('/admin/form-schema'),
+  create: data => request('/admin/form-schema', { method: 'POST', body: JSON.stringify(data) }),
+  update: (code, data) => request(`/admin/form-schema/${encodeURIComponent(code)}`, { method: 'PUT', body: JSON.stringify(data) }),
+  updateFields: (code, data) => request(`/admin/form-schema/${encodeURIComponent(code)}/fields`, { method: 'PUT', body: JSON.stringify(data) }),
+  remove: code => request(`/admin/form-schema/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+}
+
+export const api = { login, logout, getProfile, verifyMfa, users, stats, feedback, config, cycle, pending, submissions, logs, announcements, ai, export: exportData, marks, workflow, schools, designations, workflowTemplates, profile, developer, formSchemas }

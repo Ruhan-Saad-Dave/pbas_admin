@@ -1,381 +1,296 @@
-# Form Builder — admin-managed appraisal form structure
+# Form Builder — Admin ⇄ Backend ⇄ Faculty schema pipeline
 
-**Status:** Admin UI ✅ built (Dynamic Form → Form Builder screen, against a proposed contract,
-persisted to the admin's browser only) · **Backend ⏳ nothing below exists yet**.
-**Owner of this doc:** Admin UI. **Action needed from:** backend dev, then appraisal-frontend dev.
+**Status (verified by reading the actual backend source at
+`A:\Frontend DYPIU Final\Appraisal Form 2.0\FA2.0(AKP)\Faculty_appraisal`, not assumed):**
+the backend side of this is **built and real** — the Admin UI's Dynamic Form builder is
+genuinely talking to a live `/api/v1/admin/form-schema` API, not a prototype. What's still
+missing is narrower than it used to be: one backend endpoint, one server-side validation rule,
+one school-assignment integration, and — the big one — **the faculty-facing rendering engine
+doesn't exist yet, in a different repo**. See §2 for the precise remaining list and §3 for a
+ready-to-use prompt for that last piece.
 
-## Table creation and optional column maximums (September 2026)
-
-### Optional column placeholders
-
-Each column now supports `placeholder`, an optional string, for example
-`{ "name": "Title", "type": "text", "placeholder": "Enter publication title" }`.
-Preserve it through schema save/read responses. Missing or empty values retain
-the existing default prompt. Placeholders are display-only, never default
-answers, and must not satisfy required-cell or complete-row validation.
-The preview uses them in text, long text, numeric, date, dropdown and Yes/No
-inputs. Conditional dropdowns use the placeholder for their initial choice.
-Document and computed columns display the text as a hint beside their control,
-since those controls cannot accept native placeholder text.
-
-Backend contract for placeholders:
-
-- Store `placeholder` within each column definition at
-  `sections[].fields[].columns[].placeholder` in the current admin payload.
-  No separate database column or new table is needed if schemas use JSON/JSONB.
-- Accept a string or an omitted value. Normalize legacy null/missing values to
-  an empty string when returning a canonical schema; reject other value types.
-- Preserve supplied text in create/update and subsequent list/detail/read
-  responses, including the faculty-facing schema response. An explicit empty
-  string clears an existing placeholder; do not replace it with the old value.
-- For partial updates, an omitted property leaves the saved value unchanged.
-  For full replacement schemas, an omitted property means no custom placeholder.
-- Preserve placeholders when reordering columns or changing their data type.
-  Render them as plain text, never as HTML.
-- Placeholder text must not become a cell value, a dropdown option, an uploaded
-  document reference, a scoring input, or a computed result. Existing numeric
-  and date validation rules still apply independently of the displayed text.
-
-Example table field in a schema request/response:
-
-```json
-{
-  "id": "table_publications",
-  "type": "table",
-  "label": "Publications",
-  "requireCompleteRows": true,
-  "columns": [
-    {
-      "name": "Publication title",
-      "type": "text",
-      "placeholder": "Enter publication title",
-      "maxMarks": null
-    },
-    {
-      "name": "Marks",
-      "type": "number",
-      "placeholder": "Enter marks earned",
-      "maxMarks": 10
-    },
-    {
-      "name": "Category",
-      "type": "dropdown",
-      "placeholder": "Choose a category",
-      "options": ["Journal", "Conference"],
-      "maxMarks": null
-    }
-  ]
-}
-```
-
-Required backend tests: create/read round-trip, update and explicit clearing,
-legacy schemas without placeholders, type changes and reordering, invalid
-placeholder value types, and a blank required cell that remains invalid despite
-having a configured placeholder. These are backend implementation requirements;
-the current admin builder still saves locally in the browser.
-
-### Part creation, deletion, and sequence
-
-**Updated UI hierarchy: Parts -> Tables.** The admin no longer creates or
-manages sections. Create Table adds a table directly under the selected part;
-each part supports multiple tables. Preview displays one part per page with all
-of its active tables together.
-
-For compatibility, existing `sections[].fields[]` storage is retained internally.
-The UI flattens these fields within their owning part, preserving IDs, core
-flags, validation settings, and existing standalone fields. New tables use one
-internal wrapper each. This is not a destructive schema migration.
-
-Optional form-level `tableOrder` is an ordered array of field IDs used to reorder
-items without moving them between legacy storage owners. Preserve it on save and
-read. Missing IDs follow the explicitly ordered IDs in stable existing order.
-Render within each part in this order; do not treat the wrappers as preview pages.
-Existing records without `tableOrder` retain their current field order.
-
-The parts editor now uses an inline name input, rejects empty and duplicate
-names (case-insensitive), and provides up/down controls for the ordered `parts`
-array. Save and reload must preserve that array's order. Preview groups sections
-in part order, preserving the existing relative section order within each part.
-Moving a part must not rename it, change section IDs, or change section ownership.
-
-Deletion retains existing confirmation and semantics: remove custom sections,
-retire core sections without erasing their historical data, and keep at least one
-part. Deleting or moving in the editor changes the draft until saved.
-Backend schema persistence must honor this order and the same deletion policy;
-do not implement part reordering by changing scoring or review routing.
-
-### Updated column types and complete-row validation
-
-The separate "Other field types" selector has been removed. Create Table is the
-section creation action. Column Data type now includes text, long text, decimal,
-integer, date, dropdown, dropdown with conditional text, checkbox, computed, and
-document. Existing standalone fields remain editable.
-
-Persist dropdown column `options` and, for conditional text, `triggerValue`
-and `extraLabel`. In the current preview, conditional cells use
-`{ "choice": "Other", "extra": "Details" }`. Checkbox cells distinguish an
-unanswered value from explicit Yes/No (`true`/`false`).
-
-Tables now have an optional `requireCompleteRows` boolean, default false for
-new and legacy tables. The admin checkbox is labeled "Require complete rows".
-When true, a row with any user-entered value requires all editable, active
-columns in that row. Ignore completely empty rows, auto-generated serial numbers,
-computed columns, and inactive columns. Zero and explicit false are valid
-answers. Whitespace-only text is empty. A conditional "Other" answer requires
-its extra text. Document columns require a valid uploaded attachment reference
-in production, not merely a supplied filename or the preview's blob URL.
-
-The admin preview flags incomplete rows and provides Validate rows across all
-sections, including rows outside the currently displayed section. This does not
-submit faculty appraisals. Backend and faculty renderer work remains required:
-
-- Round-trip `requireCompleteRows` (or explicitly mapped `require_complete_rows`).
-- On final submission, load the authoritative schema version for that appraisal
-  and reject incomplete started rows with 422 and structured table/row/column
-  errors. Never trust a client-supplied disabled flag.
-- Enforce this before status changes in the submission transaction. Permit draft
-  saves with partial rows. Do not bypass existing required-table, scoring, or
-  workflow validation.
-- The faculty UI must block final submission and display the same errors. This
-  repository's local admin preview cannot enforce the faculty submit endpoint.
-- Test flag-off/legacy behavior, empty rows, partial and completed rows, zero,
-  false, conditional extra text, missing attachments, and multiple tables/sections.
-
-Admin UI now provides a primary **Create Table** action in each section. Other
-field types are available in the column Data type menu. This creates the existing
-`type: "table"` field; it does not create a physical database table.
-
-Each column editor has a labeled column name, data type, and reorder/remove
-controls. **Max marks (optional)** is visible only for `number` (decimal) and
-`integer` (whole number) columns. A blank maximum is stored as `null`, not zero.
-Changing a numeric column to a nonnumeric type clears its maximum to `null`.
-Changing between numeric types preserves its configured maximum.
-
-Example of the current browser schema:
-
-```json
-{
-  "type": "table",
-  "label": "Publications",
-  "autoSerial": true,
-  "maxMarks": null,
-  "columns": [
-    { "name": "Publication title", "type": "text", "maxMarks": null },
-    { "name": "Count", "type": "integer", "maxMarks": null },
-    { "name": "Marks", "type": "number", "maxMarks": 10 }
-  ]
-}
-```
-
-Backend implementation requirements when schema persistence is added:
-
-- Preserve column order, names, supported types, and optional numeric maximums
-  through save, list, and detail responses.
-- Accept missing or null column `maxMarks` as no configured maximum. Preserve
-  explicit zero. A supplied numeric maximum must be finite and nonnegative.
-- Normalize nonnumeric column maximums to null. For existing legacy schemas,
-  tolerate stale nonnumeric maximums without rejecting the entire saved form.
-- Do not require every numeric column to have marks. Do not infer scoring
-  formulas, change appraisal scoring, or apply column maximums to table totals.
-  Table-level `maxMarks` remains a separate existing setting.
-- If the backend uses snake_case, explicitly map `maxMarks` to `max_marks`
-  at the API boundary and return the value without losing null or zero.
-- Add round-trip coverage for an unbounded numeric column, a configured numeric
-  maximum, explicit zero, numeric-to-text changes, and existing table schemas.
-
-The admin preview now wraps long column headings, displays each column's type,
-shows maximums only for numeric columns with a configured value, and provides
-horizontal scrolling for wide tables. Row addition/removal and typed cell inputs
-remain available. This is an admin preview update, not a change to faculty
-rendering or a claim that backend schema persistence is already implemented.
-
-This is the "visual form builder" that [`Schools.md`](./Schools.md) §5 explicitly deferred as
-"large, own project." It's now been built as a prototype (sidebar → *Dynamic Form → Form Builder*)
-so it can be reviewed and speced properly instead of guessed at. The screen is fully functional
-today, but everything it edits lives in `localStorage` — nothing here is live until a backend
-developer adds the pieces below.
+**Owner of this doc:** Admin UI. **Action needed from:** backend dev (small items in §2),
+then appraisal-frontend dev (the rendering engine, §3).
 
 ---
 
-## 1. Why
+## 1. What's actually implemented (confirmed by reading the code, not the old plan)
 
-Every section and field of the Standard and Creative School appraisal forms is currently hardcoded
-in the appraisal-frontend repo (`StandardMyAppraisal.jsx`, `CreativeSchoolAppraisalForm.jsx`, plus
-the `src/components/appraisal/PartA-D/*.jsx` reviewer views). Adding a field, hiding one, or adding
-a whole new section today means a frontend code change and a deploy — the admin has no way to do
-it. This doc specs the backend side of letting an admin manage that structure at runtime, without
-ever running a SQL migration by hand and without ever destroying already-submitted data.
+### 1.1 Data model — `src/models/core.py`
 
-## 2. Data model
+```python
+class FormSectionDefinition(Base):
+    __tablename__ = "form_section_definitions"
+    code            = Column(String, primary_key=True)
+    form_family     = Column(String, nullable=False)
+    part            = Column(String, nullable=False)      # free text, not an enum
+    section_key     = Column(String, nullable=False)
+    title           = Column(String, nullable=False)
+    max_marks       = Column(Numeric, nullable=False, default=0)
+    storage_table   = Column(String, nullable=True)        # NULL = custom section
+    fields          = Column(JSONB, nullable=False, default=list)
+    active          = Column(Boolean, nullable=False, default=True)
+    order           = Column(Integer, nullable=False, default=0)
+    table_order     = Column(JSONB, nullable=False, default=list)
 
-Table `public.form_section_definitions` (already exists — see the appraisal-frontend repo's
-`schema.sql:66-78`) needs **one new column**:
+class CustomSectionRow(Base):
+    __tablename__ = "custom_section_rows"
+    id, faculty_email, academic_year, form_family, section_code, section_title,
+    row_no, score, hod_score, director_score, dean_score, vc_score,
+    custom_fields = Column(JSONB, nullable=False, default=dict)
+```
+
+Every physical Part A/B table (`TeachingProcess`, `CourseFile`, `JournalPublication`, `Patent`,
+… all ~26 of them in `src/models/part_a.py` / `part_b.py`) inherits `custom_fields = Column(JSONB
+...)` from `BasePartAModel` / `BasePartBModel`. This is exactly the §2 design from the original
+plan — core fields stay real typed SQL columns, admin-added fields go through the jsonb
+side-channel — and it's done for every table, not a subset.
+
+### 1.2 Admin endpoints — `src/api/v1/admin.py:3442-3739`
+
+All five exist and are gated by real server-side role checks:
+
+```python
+def _check_admin(current_user):
+    if not any(r in current_user.roles for r in ("admin", "super_admin")):
+        raise HTTPException(status_code=403, detail="Admin role required")
+```
+
+| Method | Path | Behavior |
+|---|---|---|
+| GET | `/admin/form-schema?form_family=&part=` | lists sections, optional filters, ordered by part/order/code |
+| POST | `/admin/form-schema` | creates a section; always `storage_table=NULL` (custom) |
+| PUT | `/admin/form-schema/{code}` | updates title/part/max_marks/active/order/table_order |
+| PUT | `/admin/form-schema/{code}/fields` | replaces the field array, with key-locking (§1.3) |
+| DELETE | `/admin/form-schema/{code}` | delete if custom, **retire** (`active=False`) if core |
+
+Every response is dual-cased (`max_marks`/`maxMarks`, `table_order`/`tableOrder`) so either
+casing works from the client — this is why `src/utils/backendFormSchemas.js` in Admin UI doesn't
+need a translation layer.
+
+### 1.3 Field key-locking and core-field preservation — `src/setup/form_schema_utils.py`
+
+`validate_and_normalize_fields()` (called from the `/fields` PUT with `strict=True`) does exactly
+what the original spec asked for, verified by reading the function body:
+
+- A field's `key` is derived once (`slugify_key(label)` if none supplied) and then **locked** —
+  if an incoming payload's `key` differs from the already-saved key for that field, it raises
+  `400`.
+- If a core field (`isCustom: False`) is missing from the submitted array, it isn't dropped — the
+  function re-adds it with `active: False`, i.e. retired, not deleted.
+- Duplicate keys within one section are rejected (`strict=True`) or de-duplicated with a numeric
+  suffix (`strict=False`, used for read paths).
+- Column `maxMarks` is normalized per-column: non-numeric types force it to `null`; numeric types
+  accept a finite, non-negative number; legacy garbage values are tolerated (`strict=False`) or
+  rejected (`strict=True`) depending on call site.
+
+### 1.4 Faculty-facing read path — `src/api/v1/appraisal.py:129-170`
 
 ```
-field_schema   jsonb not null default '[]'::jsonb
-active         boolean not null default true
+GET /api/v1/appraisal/form-schema?form_family=&academic_year=
 ```
 
-`fields` (the existing plain array-of-strings column) stays as-is, untouched — `field_schema` is
-additive, not a replacement. Shape of each entry:
+This **exists and is filtered server-side** via `filter_active_form_schema()` — only
+`active: True` sections, only `active: True` fields within them, ordered by `table_order` then
+part/order. It resolves `form_family` from the caller's school when not explicit, and expands
+family groups (e.g. `standard` also pulls `all_teaching` + `standard_design`). This is the read
+path the faculty-facing renderer should call — see §3.
 
-```
-{
-  key:          string   // wire field name — immutable after first save (see §4)
-  label:        string   // shown to faculty/reviewer
-  type:         "text" | "number" | "date" | "select" | "yesNo" | "conditionalText"
-              | "computed" | "file" | "checkbox"          // closed enum, do not extend
-  required:     boolean
-  options:      string[] // only meaningful for select / yesNo / conditionalText
-  triggerValue: string   // conditionalText only — which option reveals the extra text box
-  extraLabel:   string   // conditionalText only — label for that extra text box
-  rowMax:       number | null   // per-row score cap, if this section scores per row
-  isCustom:     boolean  // true = admin-added, lives in custom_fields jsonb (see below)
-                          // false = a real SQL column on storageTable — never delete, only hide
-  active:       boolean  // false = hidden from rendering; the SQL column/data is untouched
+### 1.5 Submission pipeline already routes core vs. custom vs. brand-new sections
+
+`src/api/v1/appraisal.py` (~line 560-660, the `shred_form`-style handler) already:
+
+- Writes core fields to their real SQL column, admin-added fields into that row's `custom_fields`
+  jsonb (`db_item.custom_fields = custom_f`).
+- For sections with `storage_table IS NULL` (fully custom, admin-created from scratch), deletes
+  and rewrites `CustomSectionRow` rows keyed by `faculty_email` + `academic_year` +
+  `section_code`, splitting the reviewer score columns (`score`/`hod_score`/`director_score`/
+  `dean_score`/`vc_score`) out of the free-form `custom_fields` blob.
+
+**This means the backend can already accept and score a brand-new admin-created section** — the
+missing piece is that nothing on the faculty-facing side sends data shaped that way yet (§3).
+
+---
+
+## 2. What's still actually missing (in priority order)
+
+### 2.1 (Biggest gap, different repo) No schema-driven rendering engine on the faculty side
+
+Confirmed by reading `Appraisal-form-2.0`'s `src/features/faculty-appraisal/forms/`: forms are
+still 100% hand-coded (`StandardMyAppraisal.jsx`, `CreativeSchoolAppraisalForm.jsx`, plus the
+separate `src/components/appraisal/PartA-D/*.jsx` reviewer views). Nothing there calls
+`GET /appraisal/form-schema`. An admin can edit a schema all day in Admin UI and it changes
+what's *stored*, but faculty still see the old hardcoded form. This is the actual blocker to "it
+perfectly works end to end" — see §3 for the handoff prompt to close it.
+
+### 2.2 Custom/published families in the school form registry — RESOLVED, implemented differently than first proposed
+
+Originally reproduced live as `400 Invalid default_form 'custom'. Must be 'standard' or 'creative'.`
+This is now fixed on the backend — but implemented with a different, and better, design than what
+this doc originally proposed, so the note below is corrected to match what's actually there
+(re-read `src/setup/form_registry.py` in full before touching this again — it was substantially
+rewritten).
+
+**Actual implemented design:** there is no `"custom"` sentinel value. For any `default_form` that
+isn't `"standard"` or `"creative"`, the backend treats **`default_form` itself as the family
+name** and validates it against real `form_section_definitions.form_family` values (queried live
+via `get_dynamic_form_registry()`, `src/setup/form_registry.py:87-104`). A dynamic registry entry
+for a family sets `default_form`, `form_variant`, **and** `form_type` (`FORM_<FAMILY>`, not
+`CUSTOM_<FAMILY>`) all consistently:
+
+```python
+dynamic_entry = {
+    "default_form": fam_clean,
+    "form_variant": fam_clean,
+    "form_type": f"FORM_{fam_clean.upper().replace('-', '_')}",
+    "form_label": f"{fam_clean.replace('_', ' ').replace('-', ' ').title()} Appraisal",
+    "active": True,
+    "is_system": False,
 }
 ```
 
-Order in the array **is** the render order — no separate `sortOrder` field.
+So the correct client payload to assign a custom family to a school is
+`{ default_form: <family>, form_variant: <family>, form_type: "FORM_<FAMILY>" }` — **not**
+`{ default_form: "custom", form_variant: <family> }`. Sending the latter 400s, because `"custom"`
+itself is never a real `form_family` value, so it fails the "is this a real, active family" check
+(`validate_and_resolve_form_config`, `src/setup/form_registry.py:146-280`) regardless of what
+`form_variant` says.
 
-`part` (already a column on `form_section_definitions`) should **not** be treated as a closed
-`"A"|"B"|"C"|"D"|"E"` enum — the admin screen lets an admin add as many parts as they want, named
-freely (e.g. "Part F", "Bonus Section"), and reassign any section to any part at any time. Store it
-as plain `text`; the only real constraint is that a form always has at least one part.
+**Admin UI was fixed to match this** (was sending the wrong shape) —
+`src/utils/backendFormFamilies.js`'s `buildFamilyList()` now sets `defaultForm: family` and
+`formType: \`FORM_${family.toUpperCase().replace(/-/g, '_')}\`` instead of the literal `'custom'` /
+`CUSTOM_` prefix it used before. If you're reading this from a different client integrating
+against this API, match the shape above, not the literal string `"custom"`.
 
-Each physical section table (`teaching_process`, `journal_publications`, ...) needs one new column:
+The active/`storage_table`-null family-discovery logic Admin UI relies on
+(`src/utils/backendFormFamilies.js` — only list a family once it has ≥1 active section and every
+section is fully custom) still applies unchanged; only the payload shape sent on save changed.
 
-```
-custom_fields  jsonb not null default '{}'::jsonb
-```
+`src/api/v1/admin.py` — `_validate_school_payload` needs to become `async` and thread `db`
+through, since the new branch needs a query:
 
-A field entry with `isCustom: true` reads/writes `row.custom_fields[key]`. A field entry with
-`isCustom: false` reads/writes the row's real SQL column directly — `key` must match an existing
-column name in that case. **Do not mix these** — core fields (`title`, `score`, `hod_score`, etc.)
-stay real typed SQL columns so existing scoring/reporting code keeps working unmodified; only
-admin-added fields go through the jsonb side-channel.
-
-A brand-new section (created from the admin screen, nothing has ever been saved for it) has
-`storage_table = NULL` and every field defaults to `isCustom: true`. Persist its rows through one
-generic table shared across all such sections, rather than a new physical table per section:
-
-```
-create table public.custom_section_rows (
-  id               uuid primary key default gen_random_uuid(),
-  faculty_email    text not null,
-  academic_year    text not null,
-  section_key      text not null,
-  row_no           int not null,
-  data             jsonb not null default '{}'::jsonb,
-  score            numeric,
-  hod_score        numeric,
-  director_score   numeric,
-  dean_score       numeric,
-  vc_score         numeric
-);
+```python
+async def _validate_school_payload(..., existing_school=None, db: AsyncSession = None) -> dict:
+    ...
+    return await validate_and_resolve_form_config(..., db=db)
 ```
 
-Only promote a heavily-used custom section to its own real physical table later, as a deliberate
-backend migration — never automatically from the admin screen.
+And both call sites need `await` + `db=db` added:
 
-## 3. Delete semantics (read carefully before implementing)
-
-- **Deleting a custom field** (`isCustom: true`): remove its entry from `field_schema`. Existing
-  rows keep the old value sitting unused inside `custom_fields` — don't strip it out of historical
-  rows, that's write amplification for no benefit.
-- **"Deleting" a core field** (`isCustom: false`): not a delete. Set `active: false` on its
-  `field_schema` entry. The form-rendering engine skips inactive fields; the SQL column and its
-  data are untouched. The admin screen already explains this distinction in its UI.
-- **Deleting/retiring a whole section**: never physically drop rows. Set `active: false` on the
-  `form_section_definitions` row. Inactive sections stop appearing for new submissions but remain
-  fully readable for any academic year that already has data in them (past reports, closed-cycle
-  views, print reports must still work).
-- **Deleting a whole part** (e.g. "delete Part A"): a part is just a tag on sections, not its own
-  row, so "deleting" it is really deleting/retiring everything tagged with it, per the two rules
-  above — custom sections under that part get deleted outright, core sections get retired
-  (`active: false`) and left with their old `part` value (the admin screen shows these as
-  "Unassigned" and lets the admin move them to a different part later; it never invents a new part
-  name for them). A form must always keep at least one part — reject/ignore a request that would
-  leave it with zero.
-
-## 4. Field `key` is locked after first save
-
-The prototype (`src/utils/dynamicFormRegistry.js`) identifies fields by an internal random `id`,
-not a stable wire `key` — it never lets a core field be deleted (only hidden), but it does not yet
-model or enforce key-locking, since the merged builder UI doesn't expose a `key` concept at all.
-Whoever wires this up for real needs to derive a stable `key` per field (e.g. slugify the label at
-creation time, same as section codes are derived today) and have the backend reject a `PUT` that
-changes an existing field's `key`, since that would orphan whatever data already sits under the old
-key.
-
-## 5. Endpoints needed (new, additive — do not change existing `/appraisal/*` endpoints)
-
+```python
+resolved_form = await _validate_school_payload(
+    code=code, full_name=full_name, track=track, has_hod=data.has_hod,
+    has_director=data.has_director, approval_chain=data.approval_chain,
+    default_form=raw_default_form, form_variant=raw_form_variant,
+    form_type=raw_form_type, form_label=raw_form_label,
+    db=db,   # NEW
+)
 ```
-GET  /api/v1/admin/form-schema?form_family=&part=      list sections + their field_schema
-PUT  /api/v1/admin/form-schema/{code}                   update title / max_marks / active
-PUT  /api/v1/admin/form-schema/{code}/fields            replace the whole field_schema array
-                                                         (send the full reordered/edited array —
-                                                         simpler and safer than per-field PATCH)
-POST /api/v1/admin/form-schema                          create a new section (custom, no
-                                                         storage_table)
-```
+(same for the `update_school` call site at `:2941`, which already has `existing_school=school`
+— just add `db=db` there too).
 
-All admin-only. Gate the same way other admin endpoints are gated (JWT + `appraisal_role`).
+No DB migration needed — `School.default_form` is already a plain `String(50)` with no CHECK
+constraint (`src/models/core.py:286`), so `"custom"` is a valid value the moment the Python
+validation allows it.
 
-**Read path for the actual appraisal form** — this is what makes an admin's edit take effect for
-faculty without a frontend deploy, don't skip it:
+Note this only fixes *assignment* — it doesn't touch §2.1's actual rendering gap. A school with
+`default_form: "custom"` will save successfully once this lands, but faculty in that school still
+see nothing different until the rendering engine in §3 exists.
 
-```
-GET  /api/v1/appraisal/form-schema?form_family=&academic_year=
-```
+### 2.3 `requireCompleteRows` isn't enforced at final submission
 
-Faculty-facing, filtered server-side to `active: true` sections and `active: true` fields only. The
-appraisal-frontend's form renderer should read from this instead of importing the hardcoded JS
-section constants — see §6.
+Admin UI's builder lets a table field be flagged `requireCompleteRows: true`, and the *admin
+preview* checks it client-side (`src/utils/tableRowValidation.js`). Grepped
+`src/api/v1/appraisal.py` for `require_complete_rows` / `requireCompleteRows`: **no hits**. The
+real submit endpoint does not check this flag at all — a faculty member (once the rendering
+engine in §2.1 exists) could submit a table with half-filled rows even if the admin marked it
+required-complete.
 
-## 6. Appraisal-frontend changes (once the endpoints exist)
+**Needed:** at the final-submit transaction, for each table field with `requireCompleteRows:
+true` on the resolved schema, reject (422, structured `{table, row, column}` errors) any row that
+has *any* filled cell but is missing a value in another *active, non-computed* column of that
+same row — mirroring exactly the logic already written client-side in
+`tableRowValidation.js`'s `incompleteTableRows()` (ignore fully-empty rows, ignore
+`computed`/inactive columns, whitespace-only counts as empty, `0`/`false` count as answered, a
+`conditionalText` "Other" choice requires its extra text). Load the schema fresh from the DB at
+submit time — never trust a client-supplied flag.
 
-The appraisal-frontend repo does **not** currently have a schema-driven rendering engine — forms
-are still fully hand-coded (`StandardMyAppraisal.jsx`, `CreativeSchoolAppraisalForm.jsx`, and the
-separate `src/components/appraisal/PartA-D/*.jsx` reviewer-view components). Wiring this up is a
-separate, larger effort: build one schema-driven render component that reads `field_schema` and
-replaces all of the above, rather than trying to bolt a read call onto the existing hand-coded
-forms. Until that exists, an admin's edits in the Form Builder change what's *stored* as the
-intended structure, but not yet what faculty actually see.
+### 2.4 No family-level archive/permanent-delete endpoint
 
-## 7. Out of scope (tell nobody to build these yet)
+Confirmed no route matching `/admin/form-families` exists anywhere in `admin.py`. Today, deleting
+a family made entirely of core sections just retires every section in it (`active=False`) — the
+family stays in the Admin UI list forever as "Inactive schema" (this is what the screenshot of
+`"all_teaching": 0 records deleted; 10 core records retired` is showing — expected behavior, not
+a bug, given §1.2's per-section delete/retire rule).
 
-- No raw DDL from the admin UI, ever — no `ALTER TABLE` / `DROP COLUMN`, directly or indirectly.
-  All flexibility comes from `field_schema` + `custom_fields` jsonb, not real column changes.
-- No renaming or deleting a field's `key` once saved — only label/type/options/required/order/
-  active are editable after creation (see §4).
-- Not a fully generic EAV system — `title`, `score`, `hod_score`, etc. stay real typed SQL columns.
-  Only admin-added fields go through the jsonb side-channel. Mixing the two is what keeps existing
-  scoring/reporting code working unmodified.
-- Real server-side role gating for these endpoints depends on an actual `admin` role existing end
-  to end in the appraisal-frontend session model — it doesn't yet (see that repo's
-  `RoleDashboard.jsx`, which has no `admin` case). Until then, treat the admin-only endpoints above
-  as needing the same interim gating this admin UI itself uses.
+If a genuine "make this family disappear from the library" action is wanted, it needs new backend
+work (this was speced in an earlier draft of this doc and is still valid, kept concise here since
+it's optional/lower priority than §2.1-§2.3):
 
-## 8. Admin UI — what's built (reference)
+- A family-level archive endpoint, separate from per-section `active`, with a `delete-impact`
+  precheck (counts of schools/appraisals referencing the family) before allowing it.
+- Exclude archived families from the default Admin UI list; `include_archived=true` for an
+  explicit view.
+- Never resurrect archived families on server restart/seed.
 
-This lives inside the same **Dynamic Form** tool the admin uses to design brand-new forms — not a
-separate screen — since a core PBAS section and an admin-added custom section are edited with the
-same UI, just with different delete semantics (§3).
+---
 
-- `src/data/pbasFormSeed.js` — the real current Standard/Creative section & field structure,
-  hand-extracted from the appraisal-frontend repo's form files. `storageTable` values are a
-  best-effort match against that repo's `schema.sql`; several sections have no obvious physical
-  table and are left `null`.
-- `src/utils/dynamicFormRegistry.js` — the persistence layer. On first-ever load it seeds two forms
-  ("Standard Appraisal Form", "Creative School Appraisal Form") built from `pbasFormSeed.js`, with
-  every seeded section flagged `isCore:true` and every seeded field `isCustom:false`. Its functions
-  (`saveDynamicForm` / `setPublished` / `deleteDynamicForm`, etc.) are shaped closely enough to §5's
-  future API that swapping the body of each for a real `api.*` call is a one-file change.
-- `src/pages/forms/DynamicFormPage.jsx` — the screen itself: a form picker, sections grouped into
-  **Parts** (tabs, with "Add Part"/"Delete Part" — see §3's part-delete semantics — and a per-section
-  Part dropdown to reassign it), a section editor with reorder, hide/delete per §3's core-vs-custom
-  semantics, an "Add Field" / "Add Section" flow (table fields also support Excel-import and
-  left/right column reorder), and a live preview — paginated one section per page like the real
-  form — including document-upload fields, viewable in-preview via a local blob URL (no backend
-  storage exists yet, so uploaded files don't persist past the browser session).
+## 3. The prompt — hand this to a session rooted in the faculty-appraisal-frontend repo
+
+This closes §2.1, the actual remaining blocker to "it perfectly works end to end." Paste this as
+the opening message of a **new** Claude Code session with its working directory set to the
+faculty-appraisal-frontend repo (confirm with the user which of the several copies under
+`Frontend DYPIU Final\` is the live one before starting — do not guess):
+
+> Build a schema-driven rendering engine for the faculty appraisal form, reading from the
+> backend endpoint that already exists: `GET /api/v1/appraisal/form-schema?form_family=&academic_year=`
+> (see `src/api/v1/appraisal.py:129-170` — it's already filtered server-side to active
+> sections/fields and respects `table_order`).
+>
+> Today the form is fully hand-coded in `src/features/faculty-appraisal/forms/standard/StandardMyAppraisal.jsx`
+> and `.../CreativeSchool/CreativeSchoolAppraisalForm.jsx`, plus separate reviewer-view components
+> under `src/components/appraisal/PartA-D/*.jsx`. Replace all of that with one component,
+> `<SchemaSectionTable section={section} mode={"self"|"review"} .../>`, driven entirely by the
+> field shape the backend already returns: `{ id, key, label, type, required, options,
+> triggerValue, extraLabel, rowMax, maxMarks, isCustom, active, autoSerial, columns: [{ name,
+> type, maxMarks }] }`. Field `type` is a closed enum: `text | textarea | number | integer | date
+> | dropdown | conditionalText | checkbox | computed | file | table` — do not invent new ones.
+>
+> Hard constraints:
+> - Do not change the wire format of `PUT /appraisal/snapshot` or `POST /appraisal/submit` — the
+>   backend already knows how to split a submitted row into core SQL columns vs. `custom_fields`
+>   jsonb vs. a brand-new `CustomSectionRow` (see `src/api/v1/appraisal.py`, the section around
+>   "Handle custom / dynamic sections") — match the payload shape it already expects, keyed by
+>   `section_key` or `code`, rather than changing the backend.
+> - Preserve every existing scoring formula (lecture guideline, feedback guideline, external
+>   project guideline, consultancy guideline, etc.) exactly — port the functions from
+>   `src/utils/appraisalFormUtils.js`, don't reimplement them from scratch.
+> - Table fields render add/remove-row the same way Admin UI's live preview does: delete only
+>   removes the last row, never an arbitrary one — this is a deliberate, already-familiar
+>   constraint for faculty, not a bug to fix.
+> - Do client-side `requireCompleteRows` validation too (same rules as
+>   `pbas_admin/src/utils/tableRowValidation.js`'s `incompleteTableRows`), but treat it as
+>   UX-only until the backend also enforces it server-side (see the admin_ui doc's §2.3 — that's
+>   a separate, still-open backend task; don't skip submitting just because the client thinks a
+>   row is incomplete once that server check exists, let the server's 422 be authoritative).
+> - Load the current academic year's schema once per session, not per field render.
+>
+> Migrate incrementally: port Standard first, diff computed totals/payload shape against the old
+> renderer on the same data before cutting over, then Creative, then remove the old PartA-D
+> reviewer components last.
+
+---
+
+## 4. Reference — Admin UI side of this (already built, for context)
+
+- `src/data/pbasFormSeed.js` — the real Standard/Creative section & field structure, used only to
+  seed the two default forms in the Admin UI's local library on first load.
+- `src/utils/dynamicFormRegistry.js` — legacy browser-only draft helpers (`saveDynamicForm`,
+  `setPublished`, etc.); no longer the save path for backend-managed forms.
+- `src/utils/backendFormSchemas.js` — the real adapter: `createSchemaStore(api.formSchemas)`
+  loads/groups/saves/removes against the five endpoints in §1.2, handling key-locking, per-part
+  empty-section rejection, and partial-failure reporting.
+- `src/api/client.js`'s `formSchemas` — the five authenticated HTTP calls.
+- `src/pages/forms/DynamicFormPage.jsx` — Parts → Tables editor, live interactive preview (one
+  part per page), document-upload fields (blob-URL only, no real attachment storage yet), Save
+  schema / Activate / Deactivate actions wired to the adapter above.

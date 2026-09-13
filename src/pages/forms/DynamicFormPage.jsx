@@ -1,16 +1,24 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { C } from '../../constants/colors';
 import { I } from '../../components/icons';
 import { inp, lbl, pBtn, oBtn, smBtn } from '../../constants/styleTokens';
 import PageHead from '../../components/PageHead';
 import './DynamicFormPage.css';
+import { api } from '../../api/client';
+import { createSchemaStore } from '../../utils/backendFormSchemas';
+import { readFormMetadata, writeFormMetadata } from '../../utils/backendFormMetadata';
+import { notifyCustomFormFamiliesChanged } from '../../utils/backendFormFamilies';
+
+const schemaStore = createSchemaStore(api.formSchemas);
+
 import { incompleteTableRows } from '../../utils/tableRowValidation';
 import Badge from '../../components/Badge';
 import {
   FIELD_TYPES, COLUMN_TYPES, FORM_COLORS, FORM_ICON_NAMES,
-  getDynamicForms, saveDynamicForm, setPublished, deleteDynamicForm,
-  onDynamicFormsChanged, blankDraft, blankField, blankColumn, newSection,
+  getDynamicForms, deleteDynamicForm,
+  blankDraft, blankField, blankColumn, newSection,
   maskDateDDMMYYYY, isValidDDMMYYYY, filterNumeric,
+  findMissingSelfScoreMax, resolveSelfScoreMax,
 } from '../../utils/dynamicFormRegistry';
 
 const STEPS = [
@@ -70,10 +78,10 @@ function FormsList({ forms, activeKey, onSelect, onNew, onDelete }) {
                 <span className="df-form-info">
                   <strong>{f.label || 'Untitled Form'}</strong>
                   <span>{f.parts.length} parts / {tableCount(f)} tables</span>
-                  <span className={`df-status ${f.published ? 'is-published' : ''}`}>{f.published ? 'Published' : 'Draft'}</span>
+                  <span className={`df-status ${f.published ? 'is-published' : ''}`}>{f.backendManaged ? (f.published ? 'Active schema' : 'Inactive schema') : 'Local draft'}</span>
                 </span>
               </button>
-              <button type="button" className="df-icon-button df-delete" title={`Delete ${f.label || 'form'}`} aria-label={`Delete ${f.label || 'form'}`} onClick={() => onDelete(f)}><I.trash size={14} /></button>
+              <button type="button" className="df-icon-button df-delete" title={`${f.backendManaged && f.sections.some(s => s.isCore) ? 'Retire' : 'Delete'} ${f.label || 'form'}`} aria-label={`${f.backendManaged && f.sections.some(s => s.isCore) ? 'Retire' : 'Delete'} ${f.label || 'form'}`} onClick={() => onDelete(f)}><I.trash size={14} /></button>
             </div>
           );
         })}
@@ -150,14 +158,27 @@ function FieldRow({ field, index, total, onChange, onMove, onDelete }) {
     set('columns', cols);
   }
   function addColumn() {
-    set('columns', [...field.columns, blankColumn('text', field.columns.length)]);
+    // New columns always land before the locked Self Score column, if one exists,
+    // so it stays pinned as the last column.
+    const lockedIdx = field.columns.findIndex(c => c.locked);
+    const insertAt = lockedIdx === -1 ? field.columns.length : lockedIdx;
+    const cols = [...field.columns];
+    cols.splice(insertAt, 0, blankColumn('text', field.columns.length));
+    set('columns', cols);
   }
-  function removeColumn(idx) {
+  function removeColumn(idx, force = false) {
+    if (field.columns[idx]?.locked && !force) return;
     set('columns', field.columns.filter((_, i) => i !== idx));
   }
+  function removeLockedColumn(idx) {
+    if (!window.confirm('Delete the Faculty Score column from this table? It won\'t be re-added automatically — add it back manually if needed.')) return;
+    removeColumn(idx, true);
+  }
   function moveColumn(idx, dir) {
+    if (field.columns[idx]?.locked) return;
     const next = idx + dir;
     if (next < 0 || next >= field.columns.length) return;
+    if (field.columns[next]?.locked) return;
     const cols = [...field.columns];
     [cols[idx], cols[next]] = [cols[next], cols[idx]];
     set('columns', cols);
@@ -279,6 +300,14 @@ function FieldRow({ field, index, total, onChange, onMove, onDelete }) {
 
       {field.type === 'table' && (
         <div>
+          <label style={{ display: 'block', marginBottom: 12 }}>
+            <span style={{ ...lbl, display: 'block', marginBottom: 4 }}>Guideline <small>(optional — shown to faculty above this table)</small></span>
+            <textarea
+              className="ifield" style={{ ...inp, width: '100%', minHeight: 70, resize: 'vertical', padding: '7px 9px', whiteSpace: 'pre-wrap' }}
+              value={field.guideline ?? ''} placeholder={'e.g.\n1. Attach supporting documents for every entry.\n2. Marks are awarded per verified row.'}
+              onChange={e => set('guideline', e.target.value)}
+            />
+          </label>
           <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16 }}>
             <input type="checkbox" checked={!!field.requireCompleteRows} onChange={e => set('requireCompleteRows', e.target.checked)} />
             Require complete rows
@@ -312,46 +341,78 @@ function FieldRow({ field, index, total, onChange, onMove, onDelete }) {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {field.columns.map((col, idx) => (
-              <div key={idx} className="df-column-editor">
+              <div key={idx} className="df-column-editor" style={col.locked ? { background: `${C.accent}0a`, borderRadius: 8, padding: '8px 10px', border: `1px solid ${C.accent}25` } : undefined}>
                 <label className="df-column-name">
-                  <span>Column {idx + 1} name</span>
+                  <span>{col.locked ? 'Column name (fixed, last)' : `Column ${idx + 1} name`}</span>
                 <input
-                  className="ifield" style={{ ...inp, flex: '1 1 120px', width: 'auto', padding: '6px 9px' }}
+                  className="ifield" style={{ ...inp, flex: '1 1 120px', width: 'auto', padding: '6px 9px', opacity: col.locked ? .7 : 1 }}
                   value={col.name}
                   placeholder="Enter column name here"
                   autoComplete="off"
+                  readOnly={col.locked}
+                  title={col.locked ? 'This column is always named "Faculty Score"' : undefined}
                   onChange={e => updateColumn(idx, { name: e.target.value })}
                 />
                 </label>
                 <label className="df-column-placeholder">
-                  <span>Placeholder <small>(optional)</small></span>
-                  <input className="ifield" style={inp} value={col.placeholder ?? ''} placeholder="e.g. Enter publication title" onChange={e => updateColumn(idx, { placeholder: e.target.value })} />
+                  <span>Placeholder {col.locked ? '(fixed)' : <small>(optional)</small>}</span>
+                  <input
+                    className="ifield" style={{ ...inp, opacity: col.locked ? .7 : 1 }} value={col.placeholder ?? ''}
+                    placeholder="e.g. Enter publication title" readOnly={col.locked}
+                    onChange={e => updateColumn(idx, { placeholder: e.target.value })}
+                  />
                 </label>
                 <label className="df-column-type">
-                  <span>Data type</span>
+                  <span>Data type{col.locked && ' (locked — whole numbers only)'}</span>
                 <select
-                  value={col.type}
+                  value={col.locked ? 'integer' : col.type} disabled={col.locked} title={col.locked ? 'The Faculty Score column is always a whole number, no decimals' : undefined}
                   onChange={e => updateColumn(idx, { type: e.target.value, maxMarks: isNumericColumn(e.target.value) ? (col.maxMarks ?? null) : null })}
-                  style={{ ...inp, width: 130, padding: '6px 8px', flexShrink: 0 }}
+                  style={{ ...inp, width: 130, padding: '6px 8px', flexShrink: 0, opacity: col.locked ? .7 : 1 }}
                 >
-                  {COLUMN_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  {col.locked
+                    ? <option value="integer">Number (Whole)</option>
+                    : COLUMN_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
                 </label>
                 {isNumericColumn(col.type) && <label className="df-column-max">
-                  <span>Max marks <small>(optional)</small></span>
+                  <span>{col.locked ? <>Total Marks per Row{col.fixedMax && <span style={{ color: C.red }}> * required</span>}</> : <>Max marks <small>(optional)</small></>}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                 <input
-                  type="number" min="0" step="any" className="ifield" title="Max marks for this column (optional)"
-                  style={{ ...inp, width: 60, padding: '6px 8px', flexShrink: 0 }}
-                  value={col.maxMarks ?? ''} placeholder="No maximum"
+                  type="number" min="0" step={col.locked ? '1' : 'any'} className="ifield"
+                  title={col.locked ? (col.fixedMax ? 'Required — fixed marks per row, independent of Total Marks' : 'Following this table\'s Total Marks — unlock to set a different value') : 'Max marks for this column (optional)'}
+                  style={{ ...inp, width: col.locked ? 90 : 60, padding: '6px 8px', flexShrink: 0, opacity: col.locked && !col.fixedMax ? .6 : 1, borderColor: col.locked && col.fixedMax && (col.maxMarks === null || col.maxMarks === undefined) ? C.red : undefined }}
+                  value={col.locked ? (col.fixedMax ? (col.maxMarks ?? '') : resolveSelfScoreMax(field, col) ?? '') : (col.maxMarks ?? '')}
+                  placeholder={col.locked ? (col.fixedMax ? 'Total Marks per Row' : 'Same as Total Marks') : 'No maximum'}
+                  readOnly={col.locked && !col.fixedMax}
                   onChange={e => updateColumn(idx, { maxMarks: e.target.value === '' ? null : Number(e.target.value) })}
                 />
+                {col.locked && (
+                  <button
+                    type="button" className="act-btn"
+                    onClick={() => updateColumn(idx, { fixedMax: !col.fixedMax, maxMarks: !col.fixedMax ? col.maxMarks : null })}
+                    title={col.fixedMax ? 'Fixed — click to follow Total Marks again' : 'Following Total Marks — click to set an independent fixed value'}
+                    aria-label={col.fixedMax ? 'Unlock: follow Total Marks' : 'Lock: set a fixed value'}
+                    style={{ width: 26, height: 26, borderRadius: 6, border: 'none', cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: col.fixedMax ? `${C.accent}22` : 'var(--c-soft-bg)', color: col.fixedMax ? C.accent : C.muted }}>
+                    <I.lock size={12} />
+                  </button>
+                )}
+                </div>
                 </label>}
+                {col.locked ? (
+                  <div className="df-column-actions" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Badge color="purple">Last · Locked</Badge>
+                    <button type="button" className="act-btn" title="Delete this column" aria-label="Delete Faculty Score column" onClick={() => removeLockedColumn(idx)}
+                      style={{ width: 28, height: 28, borderRadius: 6, border: 'none', cursor: 'pointer', background: 'rgba(248,113,113,.1)', color: C.red, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <I.x size={10} />
+                    </button>
+                  </div>
+                ) : (
                 <div className="df-column-actions">
                 <button type="button" className="act-btn" onClick={() => moveColumn(idx, -1)} disabled={idx === 0} title="Move column left"
                   style={{ width: 28, height: 28, borderRadius: 6, border: 'none', cursor: idx === 0 ? 'default' : 'pointer', background: idx === 0 ? 'transparent' : 'var(--c-soft-bg)', color: idx === 0 ? 'rgba(148,163,184,.25)' : C.muted, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
                 </button>
-                <button type="button" className="act-btn" onClick={() => moveColumn(idx, 1)} disabled={idx === field.columns.length - 1} title="Move column right"
+                <button type="button" className="act-btn" onClick={() => moveColumn(idx, 1)} disabled={idx === field.columns.length - 1 || field.columns[idx + 1]?.locked} title="Move column right"
                   style={{ width: 28, height: 28, borderRadius: 6, border: 'none', cursor: idx === field.columns.length - 1 ? 'default' : 'pointer', background: idx === field.columns.length - 1 ? 'transparent' : 'var(--c-soft-bg)', color: idx === field.columns.length - 1 ? 'rgba(148,163,184,.25)' : C.muted, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
                 </button>
@@ -360,6 +421,7 @@ function FieldRow({ field, index, total, onChange, onMove, onDelete }) {
                   <I.x size={10} />
                 </button>
                 </div>
+                )}
                 {(col.type === 'dropdown' || col.type === 'conditionalText') && (
                   <div className="df-column-options">
                     <label>Options (one per line)
@@ -390,7 +452,7 @@ function FieldRow({ field, index, total, onChange, onMove, onDelete }) {
 }
 
 // ── One section, collapsed to a summary row unless it's the open one ────────
-function TablesStep({ draft, selectedPart, onSelectPart, onAddPart, onDeletePart, onMovePart, onChange, onAdd, onDelete, onMove }) {
+function TablesStep({ draft, selectedPart, onSelectPart, onAddPart, onDeletePart, onMovePart, onChange, onAdd, onDelete, onMove, onPartGuidelineChange }) {
   const [partName, setPartName] = useState('');
   const [partError, setPartError] = useState('');
   const parts = draft.parts.length ? draft.parts : ['Part A'];
@@ -445,6 +507,16 @@ function TablesStep({ draft, selectedPart, onSelectPart, onAddPart, onDeletePart
       <div className="df-active-part-heading"><div><h3>{activePart}</h3><span>{items.filter(i => i.field.type === 'table').length} tables</span></div>
         <button type="button" className="df-add-section" onClick={() => onAdd(activePart)}><I.layers size={16} /> Create Table</button>
       </div>
+
+      <label style={{ display: 'block', margin: '0 0 14px' }}>
+        <span style={{ ...lbl, display: 'block', marginBottom: 4 }}>Part guideline <small>(optional — shown to faculty above {activePart})</small></span>
+        <textarea
+          className="ifield" style={{ ...inp, width: '100%', minHeight: 60, resize: 'vertical', padding: '7px 9px', whiteSpace: 'pre-wrap' }}
+          value={(draft.partGuidelines || {})[activePart] ?? ''}
+          placeholder={`e.g.\n1. This part covers teaching-related activities for the appraisal year.\n2. Attach supporting documents where asked.`}
+          onChange={e => onPartGuidelineChange(activePart, e.target.value)}
+        />
+      </label>
 
       {items.length === 0 && <div className="df-library-empty">No tables in {activePart} yet.</div>}
       <div className="df-part-tables">
@@ -615,7 +687,7 @@ function LiveTable({ field, rows, onRowsChange }) {
             {field.columns.map((c, i) => (
               <th key={i} style={{ textAlign: 'left', padding: '7px 10px', background: 'var(--c-soft-bg)', color: C.muted, fontWeight: 700, borderBottom: '1px solid var(--c-border)' }}>
                 <span className="df-preview-column-name">{c.name || `Column ${i + 1}`}</span>
-                <span className="df-preview-column-meta">{COLUMN_TYPES.find(t => t.value === c.type)?.label || c.type}{isNumericColumn(c.type) && c.maxMarks != null && <span> / Max {c.maxMarks}</span>}</span>
+                <span className="df-preview-column-meta">{COLUMN_TYPES.find(t => t.value === c.type)?.label || c.type}{isNumericColumn(c.type) && resolveSelfScoreMax(field, c) != null && <span> / Max {resolveSelfScoreMax(field, c)}</span>}</span>
               </th>
             ))}
           </tr>
@@ -749,6 +821,11 @@ function PreviewStep({ draft }) {
               <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, letterSpacing: .4, textTransform: 'uppercase' }}>
                 Page {page + 1} of {visibleSections.length}
               </div>
+              {(draft.partGuidelines || {})[current?.title]?.trim() && (
+                <div style={{ fontSize: 11.5, color: C.muted, background: 'var(--c-soft-bg)', border: '1px solid var(--c-border)', borderRadius: 8, padding: '9px 12px', whiteSpace: 'pre-wrap' }}>
+                  {draft.partGuidelines[current.title]}
+                </div>
+              )}
 
               {visibleFields.length === 0 ? (
                 <div style={{ fontSize: 11.5, color: C.muted }}>No tables in this part yet.</div>
@@ -762,6 +839,11 @@ function PreviewStep({ draft }) {
                       </span>
                     )}
                   </label>
+                  {f.type === 'table' && f.guideline?.trim() && (
+                    <div style={{ fontSize: 11.5, color: C.muted, background: 'var(--c-soft-bg)', border: '1px solid var(--c-border)', borderRadius: 8, padding: '8px 11px', marginBottom: 8, whiteSpace: 'pre-wrap' }}>
+                      {f.guideline}
+                    </div>
+                  )}
 
                   {f.type === 'table' ? (
                     <LiveTable
@@ -823,7 +905,7 @@ function PublishStep({ draft, msg, onSaveDraft, onPublish, onUnpublish }) {
             {draft.parts.length} parts / {tableCount(draft)} tables
           </div>
         </div>
-        <Badge color={draft.published ? 'green' : 'gray'}>{draft.published ? 'Published' : 'Draft'}</Badge>
+        <Badge color={draft.published ? 'green' : 'gray'}>{draft.backendManaged ? (draft.published ? 'Active schema' : 'Inactive schema') : 'Local draft'}</Badge>
       </div>
 
       {msg && (
@@ -838,21 +920,25 @@ function PublishStep({ draft, msg, onSaveDraft, onPublish, onUnpublish }) {
       }}>
         <I.idea size={15} stroke={C.yellow} style={{ flexShrink: 0, marginTop: 1 }} />
         <span>
-          Publishing makes this form selectable in Add/Edit School's Form step. It's a prototype
-          saved in this browser — faculty won't actually see it until a backend developer wires up
-          rendering for it.
+          Save writes schema records to the backend, and new/edited tables go live immediately —
+          there's no separate publish step, so double-check a table before saving if it's not
+          ready for faculty yet. A table you've individually retired (via "Restore retired
+          items") stays retired even if you save other changes here.
+          Form name, description, color and icon are remembered in this browser only.
+          Activation/deactivation below bulk-sets every table in this form at once — it does not
+          register a school form or enable faculty submission validation on its own.
         </span>
       </div>
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <button className="act-btn" style={oBtn} onClick={onSaveDraft}>Save Draft</button>
+        <button className="act-btn" style={oBtn} onClick={onSaveDraft}>Save schema</button>
         {draft.published ? (
           <button className="act-btn" style={{ ...oBtn, color: C.yellow, borderColor: `${C.yellow}45` }} onClick={onUnpublish}>
-            Unpublish
+            Deactivate all tables
           </button>
         ) : (
           <button className="act-btn" style={pBtn} onClick={onPublish}>
-            <I.check size={14} /> Publish
+            <I.check size={14} /> Activate all tables
           </button>
         )}
       </div>
@@ -863,7 +949,10 @@ function PublishStep({ draft, msg, onSaveDraft, onPublish, onUnpublish }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function DynamicFormPage() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [forms, setForms] = useState(() => getDynamicForms());
+  const [forms, setForms] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [syncError, setSyncError] = useState('');
+  const [operationNotice, setOperationNotice] = useState('');
   const [draft, setDraft] = useState(null);
   const [step, setStep] = useState(0);
   const [dir, setDir] = useState('forward');
@@ -872,14 +961,16 @@ export default function DynamicFormPage() {
   const [msg, setMsg] = useState('');
   const publishedCount = forms.filter(f => f.published).length;
 
-  const refresh = useCallback(() => setForms(getDynamicForms()), []);
-
-  useEffect(() => onDynamicFormsChanged(refresh), [refresh]);
+  async function refresh() {
+    const remote = await schemaStore.load(readFormMetadata());
+    const imported = new Set(Object.values(readFormMetadata()).map(m => m.sourceKey).filter(Boolean));
+    const local = getDynamicForms().filter(f => !imported.has(f.key)).map(f => ({ ...f, published: false }));
+    setForms([...remote, ...local]);
+  }
   useEffect(() => {
-    if (!msg) return;
-    const t = setTimeout(() => setMsg(''), 2600);
-    return () => clearTimeout(t);
-  }, [msg]);
+    setBusy(true);
+    refresh().catch(e => setSyncError(e.message)).finally(() => setBusy(false));
+  }, []);
 
   function openDraft(form) {
     setDraft(form);
@@ -893,11 +984,29 @@ export default function DynamicFormPage() {
   function selectForm(f) {
     openDraft({ ...f, sections: f.sections.map(s => ({ ...s, fields: s.fields.map(fl => ({ ...fl })) })) });
   }
-  function deleteForm(f) {
-    if (!window.confirm(`Delete "${f.label || 'this form'}"? This can't be undone.`)) return;
-    deleteDynamicForm(f.key);
-    refresh();
-    if (draft?.key === f.key) setDraft(null);
+  async function deleteForm(f) {
+    const hasCore = f.backendManaged && f.sections.some(s => s.isCore);
+    const confirmation = hasCore
+      ? `Retire "${f.label}"? Core records will become inactive and remain in the library to preserve existing data. Custom records in this family will be deleted.`
+      : `Delete "${f.label || 'this form'}"? This can't be undone.`;
+    if (!window.confirm(confirmation)) return;
+    setBusy(true);
+    setSyncError('');
+    setOperationNotice('');
+    try {
+      let result;
+      if (f.backendManaged) result = await schemaStore.remove(f);
+      else { deleteDynamicForm(f.key); result = { deleted: 1, retired: 0 }; }
+      await refresh();
+      if (draft?.key === f.key) setDraft(null);
+      setOperationNotice(result.retired
+        ? `"${f.label}": ${result.deleted} records deleted; ${result.retired} core records retired. This family remains listed as inactive because the backend preserves core schemas. Permanent family removal is not supported by this API.`
+        : `"${f.label}" deleted successfully.`);
+    } catch (e) {
+      setSyncError(`Deletion incomplete: ${e.message}. Some requests may already have succeeded.`);
+      try { await refresh(); } catch { /* Keep the original deletion error visible. */ }
+    }
+    finally { setBusy(false); }
   }
 
   function updateDraft(patch) {
@@ -928,6 +1037,9 @@ export default function DynamicFormPage() {
       return { ...d, tableOrder: [...order.filter(key => !ids.includes(key)), ...ids] };
     });
   }
+  function setPartGuideline(part, text) {
+    setDraft(d => ({ ...d, partGuidelines: { ...d.partGuidelines, [part]: text } }));
+  }
   function addPart(name) {
     const trimmed = name.trim();
     if (!trimmed || draft.parts.some(p => p.toLowerCase() === trimmed.toLowerCase())) return;
@@ -953,13 +1065,17 @@ export default function DynamicFormPage() {
     if (customCount) bits.push(`delete ${customCount} item${customCount === 1 ? '' : 's'}`);
     if (coreCount) bits.push(`retire ${coreCount} core item${coreCount === 1 ? '' : 's'} (preserved as hidden records)`);
     if (!window.confirm(`Delete "${part}"?${bits.length ? ` This will ${bits.join(' and ')}.` : ''}`)) return;
-    setDraft(d => ({
-      ...d,
-      parts: d.parts.filter(p => p !== part),
-      sections: d.sections
-        .filter(s => s.part !== part || s.isCore)
-        .map(s => (s.part === part ? { ...s, active: false } : s)),
-    }));
+    setDraft(d => {
+      const { [part]: _removed, ...partGuidelines } = d.partGuidelines || {};
+      return {
+        ...d,
+        parts: d.parts.filter(p => p !== part),
+        partGuidelines,
+        sections: d.sections
+          .filter(s => s.part !== part || s.isCore)
+          .map(s => (s.part === part ? { ...s, active: false } : s)),
+      };
+    });
     if (selectedPart === part) {
       const remaining = draft.parts.filter(p => p !== part);
       setSelectedPart(remaining[0] || '');
@@ -981,27 +1097,42 @@ export default function DynamicFormPage() {
     setStep(next);
   }
 
-  function handleSaveDraft() {
+  async function persistSchema(activate) {
+    if (busy) return;
     if (!draft.label.trim()) { setMsg('Give the form a name first.'); return; }
-    const saved = saveDynamicForm(draft);
-    setDraft(saved);
-    refresh();
-    setMsg('Draft saved.');
+    if (!fieldCount(draft)) { setMsg('Create at least one table before saving.'); return; }
+    const missingSelfScore = findMissingSelfScoreMax(draft.sections);
+    if (missingSelfScore.length) {
+      setMsg(`Set a "Total Marks per Row" value for the Faculty Score column in: ${missingSelfScore.map(p => `${p.fieldLabel || 'table'} (${p.sectionTitle})`).join(', ')}.`);
+      return;
+    }
+    const meta = readFormMetadata();
+    const remembered = Object.entries(meta).find(([, m]) => m.sourceKey && m.sourceKey === draft.key)?.[0];
+    const family = draft.backendFamily || remembered || `custom_${crypto.randomUUID().replaceAll('-', '')}`;
+    const working = { ...draft, backendFamily: family };
+    setDraft(working);
+    setBusy(true);
+    setSyncError('');
+    setMsg('');
+    try {
+      const savedForms = await schemaStore.save(working, { activate });
+      meta[family] = { label: working.label, desc: working.desc, color: working.color, iconName: working.iconName, partGuidelines: working.partGuidelines || {}, sourceKey: working.backendManaged ? meta[family]?.sourceKey : working.key };
+      writeFormMetadata(meta);
+      const saved = savedForms.find(f => f.backendFamily === family);
+      if (!saved) throw new Error('Save could not be verified by reloading the backend.');
+      setDraft(saved);
+      await refresh();
+      notifyCustomFormFamiliesChanged();
+      setMsg(activate === true ? 'Schemas activated on the backend. Now selectable as a school\'s Appraisal Form — faculty rendering must still be configured separately.' : activate === false ? 'Schemas deactivated on the backend.' : 'Schema saved and reloaded from the backend.');
+    } catch (e) { setSyncError(e.message); }
+    finally { setBusy(false); }
   }
+  function handleSaveDraft() { return persistSchema(); }
   function handlePublish() {
-    if (!draft.label.trim()) { setMsg('Give the form a name first.'); return; }
-    if (draft.sections.length === 0 || fieldCount(draft) === 0) { setMsg('Create at least one table before publishing.'); return; }
-    const saved = saveDynamicForm(draft);
-    const published = setPublished(saved.key, true);
-    setDraft(published);
-    refresh();
-    setMsg('Published — now selectable in Add/Edit School.');
+    if (window.confirm('Activate all enabled schema records in this form? This is not school registration. The faculty renderer and submission validation must support this schema.')) return persistSchema(true);
   }
   function handleUnpublish() {
-    const updated = setPublished(draft.key, false);
-    setDraft(updated);
-    refresh();
-    setMsg('Unpublished — no longer selectable for schools.');
+    if (window.confirm('Deactivate all schema records in this form? They will be excluded from the faculty schema API.')) return persistSchema(false);
   }
 
   return (
@@ -1013,10 +1144,14 @@ export default function DynamicFormPage() {
         <PageHead title="Dynamic Form" sub="Appraisal form management" />
         <div className="df-library-stats" aria-label="Form totals">
           <span><strong>{forms.length}</strong> Saved forms</span>
-          <span><i className="df-dot" /><strong>{publishedCount}</strong> Published</span>
-          <span><strong>{forms.length - publishedCount}</strong> Drafts</span>
+          <span><i className="df-dot" /><strong>{publishedCount}</strong> Active schemas</span>
+          <span><strong>{forms.length - publishedCount}</strong> Inactive / local</span>
         </div>
       </div>
+      {syncError && <div className="df-message" role="alert">{syncError} <button type="button" style={oBtn} disabled={busy} onClick={() => { setBusy(true); refresh().then(() => setSyncError('')).catch(e => setSyncError(e.message)).finally(() => setBusy(false)); }}>Reload schemas</button></div>}
+      {operationNotice && <div className="df-message" role="status">{operationNotice}</div>}
+      {busy && <p role="status">Synchronizing schemas...</p>}
+      <fieldset disabled={busy} aria-busy={busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       <div className="df-workspace">
         <FormsList forms={forms} activeKey={draft?.key} onSelect={selectForm} onNew={startNew} onDelete={deleteForm} />
         {!draft ? (
@@ -1043,7 +1178,7 @@ export default function DynamicFormPage() {
               <div className="df-step-heading"><h3>{STEPS[step].label}</h3><span>Step {step + 1} of {STEPS.length}</span></div>
               <div key={step} className="df-step-panel" style={{ animation: `${dir === 'forward' ? 'slideInRight' : 'slideInLeft'} .2s ease both` }}>
                 {step === 0 && <DetailsStep draft={draft} updateDraft={updateDraft} />}
-                {step === 1 && <TablesStep draft={draft} selectedPart={selectedPart} onSelectPart={setSelectedPart} onAddPart={addPart} onDeletePart={deletePart} onMovePart={movePart} onChange={updateSection} onAdd={addTable} onDelete={deleteTable} onMove={moveTable} />}
+                {step === 1 && <TablesStep draft={draft} selectedPart={selectedPart} onSelectPart={setSelectedPart} onAddPart={addPart} onDeletePart={deletePart} onMovePart={movePart} onChange={updateSection} onAdd={addTable} onDelete={deleteTable} onMove={moveTable} onPartGuidelineChange={setPartGuideline} />}
                 {step === 2 && <PreviewStep key={previewNonce} draft={draft} />}
                 {step === 3 && <PublishStep draft={draft} msg={msg} onSaveDraft={handleSaveDraft} onPublish={handlePublish} onUnpublish={handleUnpublish} />}
               </div>
@@ -1057,6 +1192,7 @@ export default function DynamicFormPage() {
           </main>
         )}
       </div>
+      </fieldset>
     </div>
   );
 }

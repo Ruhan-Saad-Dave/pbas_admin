@@ -6,7 +6,7 @@
 // based on the school's track — there is one Dean per track, not per school.
 
 import { I } from '../components/icons';
-import { getPublishedDynamicForms } from '../utils/dynamicFormRegistry';
+import { getCachedCustomFormFamilies } from '../utils/backendFormFamilies';
 
 export const SCHOOL_CHAIN_CATALOG = [
   { key: 'hod',      label: 'HOD',      icon: I.users,  color: '#a78bfa', locked: false, requires: 'has_hod' },
@@ -79,20 +79,24 @@ export const SCHOOL_FORMS = [
   },
 ];
 
-// Built-in forms plus any admin-published forms from the Dynamic Form builder
-// (src/pages/forms/DynamicFormPage.jsx). Custom entries are browser-local
-// (localStorage) prototypes — see src/utils/dynamicFormRegistry.js for why.
+// Built-in forms plus any admin-published, backend-active custom form families
+// (src/pages/forms/DynamicFormPage.jsx → the real /admin/form-schema API, see
+// src/utils/backendFormFamilies.js — NOT the old browser-only dynamicFormRegistry.js
+// prototype, which the backend has no way to validate an assignment against).
+// Call useCustomFormFamilies() (backendFormFamilies.js) in any component that
+// needs this list to be live/reactive — this function itself just reads whatever
+// is currently cached.
 export function getAllSchoolForms() {
-  const custom = getPublishedDynamicForms().map(f => ({
-    key: `custom:${f.key}`,
-    defaultForm: 'custom',
-    formVariant: f.key,
-    formType: `CUSTOM_${f.key.toUpperCase()}`,
-    aliases: [f.key, `custom:${f.key}`],
+  const custom = getCachedCustomFormFamilies().map(f => ({
+    key: f.key,
+    defaultForm: f.defaultForm,
+    formVariant: f.formVariant,
+    formType: f.formType,
+    aliases: f.aliases,
     label: f.label,
     icon: I[f.iconName] || I.doc,
-    color: f.color || '#a78bfa',
-    desc: f.desc || 'Custom dynamic form — prototype, not yet rendered for faculty.',
+    color: f.color,
+    desc: f.desc,
     custom: true,
   }));
   return [...SCHOOL_FORMS, ...custom];

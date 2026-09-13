@@ -14,6 +14,7 @@ import {
   deanLabelForTrack, suggestSchoolCode, defaultChainFor,
   selectedSchoolFormKey, schoolFormPayload, cacheSchoolFormSelection,
 } from '../../constants/schoolRoles';
+import { useCustomFormFamilies } from '../../utils/backendFormFamilies';
 
 const EMPTY_SCHOOL = {
   code: '', full_name: '', track: 'engineering',
@@ -75,6 +76,7 @@ function Stepper({ current }) {
 
 export default function AddSchoolPage() {
   const navigate = useNavigate();
+  useCustomFormFamilies();
   const [step,    setStep]    = useState(0);
   const [dir,     setDir]     = useState('forward'); // drives step-transition slide direction
   const [school,  setSchool]  = useState(EMPTY_SCHOOL);

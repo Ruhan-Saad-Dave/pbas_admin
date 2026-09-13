@@ -99,6 +99,13 @@ export function blankColumn(type = 'text', index = 0) {
   return { name: `Column ${index + 1}`, type, maxMarks: null, options: ['Option 1', 'Other'], triggerValue: 'Other', extraLabel: 'Please specify' };
 }
 
+// Every new table gets this as its permanent last column — locked (can't be
+// removed or reordered away from last) and its Max value is required before
+// the table can be saved. See requireSelfScoreMax() in DynamicFormPage.jsx.
+export function selfScoreColumn() {
+  return { name: 'Faculty Score', placeholder: 'Self Score', type: 'integer', maxMarks: null, fixedMax: false, options: [], triggerValue: '', extraLabel: '', locked: true };
+}
+
 export function blankField(type = 'text') {
   const hasOptions = type === 'dropdown' || type === 'conditionalText';
   return {
@@ -109,10 +116,11 @@ export function blankField(type = 'text') {
     options: hasOptions ? ['Option 1', 'Other'] : [],
     triggerValue: type === 'conditionalText' ? 'Other' : '',
     extraLabel: type === 'conditionalText' ? 'Please specify' : '',
-    columns: type === 'table' ? [blankColumn('text', 0)] : [],
+    columns: type === 'table' ? [blankColumn('text', 0), selfScoreColumn()] : [],
     autoSerial: type === 'table' ? true : undefined,
     requireCompleteRows: type === 'table' ? false : undefined,
     maxMarks: type === 'table' ? null : undefined,
+    guideline: type === 'table' ? '' : undefined,
     isCustom: true,
     active: true,
   };
@@ -126,6 +134,7 @@ export function blankDraft() {
     color: FORM_COLORS[0],
     iconName: FORM_ICON_NAMES[0],
     parts: ['Part A'],
+    partGuidelines: {},
     sections: [],
     published: false,
     createdAt: null,
@@ -212,13 +221,51 @@ function buildPbasSeedForms() {
 
 // ── Normalization — keeps older saved forms loading cleanly as the shape grows ─
 function normalizeField(field) {
+  let columns = (field.columns || []).map(col => ({ maxMarks: null, ...col }));
+  // Tables created before the locked Self Score column existed have none — leave
+  // them alone (don't retroactively inject one into legacy/seeded data). Tables
+  // that do have one keep it pinned as the true last column no matter what order
+  // it was saved in.
+  const lockedIdx = columns.findIndex(c => c.locked);
+  if (lockedIdx !== -1 && lockedIdx !== columns.length - 1) {
+    const [locked] = columns.splice(lockedIdx, 1);
+    columns = [...columns, locked];
+  }
   return {
     ...field,
     isCustom: field.isCustom ?? true,
     active: field.active ?? true,
     maxMarks: field.type === 'table' ? (field.maxMarks ?? null) : field.maxMarks,
-    columns: (field.columns || []).map(col => ({ maxMarks: null, ...col })),
+    guideline: field.type === 'table' ? (field.guideline ?? '') : field.guideline,
+    columns,
   };
+}
+
+// A locked Faculty Score column's "Total Marks per Row" is only required input
+// when its "Fixed" checkbox is on (fixedMax:true) — otherwise it silently
+// follows the table's own Total Marks value (see resolveSelfScoreMax below),
+// so an unset value there is never a save-blocking problem.
+export function resolveSelfScoreMax(field, col) {
+  if (!col) return null;
+  if (!col.locked) return col.maxMarks ?? null;
+  return col.fixedMax ? (col.maxMarks ?? null) : (field.maxMarks ?? null);
+}
+
+// True once every table field's locked Faculty Score column (if it has one and
+// is set to Fixed) has a Max value set — call before saving/publishing so
+// half-set tables can't go live.
+export function findMissingSelfScoreMax(sections) {
+  const problems = [];
+  for (const section of sections) {
+    for (const field of section.fields) {
+      if (field.type !== 'table') continue;
+      const scoreCol = field.columns.find(c => c.locked);
+      if (scoreCol?.fixedMax && (scoreCol.maxMarks === null || scoreCol.maxMarks === undefined)) {
+        problems.push({ sectionTitle: section.title, fieldLabel: field.label });
+      }
+    }
+  }
+  return problems;
 }
 
 function normalizeSection(section) {

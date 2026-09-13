@@ -7,6 +7,7 @@ import {
   SCHOOL_CHAIN_CATALOG, SCHOOL_CHAIN_MAP, SCHOOL_TRACKS, getAllSchoolForms,
   deanLabelForTrack, defaultChainFor, selectedSchoolFormKey, schoolFormPayload,
 } from '../../constants/schoolRoles';
+import { useCustomFormFamilies } from '../../utils/backendFormFamilies';
 
 // ── Section heading — icon tile + label, matches the rest of the app ──────────
 export function SL({ icon: Icon, color = C.accent, children, sub }) {
@@ -310,6 +311,7 @@ function FlowArrow() {
 
 // ── Appraisal form picker ────────────────────────────────────────────────────
 export function FormPicker({ value, onChange }) {
+  useCustomFormFamilies();
   const forms = getAllSchoolForms();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -373,8 +375,9 @@ export function FormPicker({ value, onChange }) {
         );
       })}
       <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>
-        Custom forms are built in Dynamic Form → Form Builder. They're a design prototype —
-        selecting one here won't change what faculty see until it's wired up on the backend.
+        Custom forms are built and activated in Dynamic Form → Form Builder. Assigning one here
+        is a real, saved school setting — faculty won't see the custom fields yet, though, until
+        the appraisal-frontend's rendering engine reads this schema (separate, still-open work).
       </div>
     </div>
   );
