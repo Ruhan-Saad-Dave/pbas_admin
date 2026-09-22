@@ -2,8 +2,27 @@ const canonicalType = type => type === 'conditionaltext' ? 'conditionalText' : t
 
 export function readField(field) {
   if (typeof field === 'string') return { id: field, key: field, label: field, type: 'text', active: true, isCustom: false, columns: [], options: [] };
+  const rawRowHeaders = field.rowHeaders || field.row_headers || [];
+  const rowHeaders = Array.isArray(rawRowHeaders)
+    ? rawRowHeaders.map((rh, idx) => {
+        if (typeof rh === 'string') return { id: rh, label: rh };
+        if (rh && typeof rh === 'object') {
+          return {
+            id: String(rh.id || rh.key || `row_${idx + 1}`).trim(),
+            label: rh.label !== undefined && rh.label !== null ? String(rh.label) : '',
+          };
+        }
+        return { id: `row_${idx + 1}`, label: String(rh || '') };
+      })
+    : [];
+
   return {
     ...field, id: field.id || field.key, type: canonicalType(field.type),
+    layout: field.layout || 'rows',
+    rowHeaderTitle: field.rowHeaderTitle ?? field.row_header_title ?? '',
+    row_header_title: field.rowHeaderTitle ?? field.row_header_title ?? '',
+    rowHeaders,
+    row_headers: rowHeaders,
     active: field.active !== false, isCustom: field.isCustom ?? field.is_custom ?? true,
     options: field.options || [], columns: (field.columns || []).map(c => ({
       ...c, type: canonicalType(c.type), placeholder: typeof c.placeholder === 'string' ? c.placeholder : '',
@@ -31,16 +50,24 @@ export function formsFromSchemas(rows, metadata = {}) {
   return [...grouped].map(([family, records]) => {
     records.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const meta = metadata[family] || {};
+    const partGuidelines = { ...(meta.partGuidelines || {}) };
+    for (const r of records) {
+      const pg = r.part_guideline ?? r.partGuideline;
+      if (r.part && pg !== undefined && pg !== null) {
+        partGuidelines[r.part] = pg;
+      }
+    }
     return {
       key: `backend:${family}`, backendFamily: family, backendManaged: true,
       label: meta.label || family, desc: meta.desc || '', color: meta.color || '#3b82f6', iconName: meta.iconName || 'doc',
       parts: [...new Set(records.map(r => r.part))],
-      partGuidelines: meta.partGuidelines || {},
+      partGuidelines,
       tableOrder: [...new Set(records.flatMap(r => r.tableOrder || r.table_order || []))],
       published: records.some(r => r.active), sections: records.map(r => ({
         id: r.code, backendCode: r.code, sectionKey: r.section_key, storageTable: r.storage_table,
         title: r.title, part: r.part, active: r.active !== false, isCore: !!r.storage_table,
         maxMarks: r.max_marks ?? 0, fields: r.fields.map(readField),
+        partGuideline: r.part_guideline ?? r.partGuideline ?? null,
       })),
     };
   });
@@ -92,8 +119,11 @@ export function createSchemaStore(api) {
         // even during a bulk Activate, so restoring one still requires the
         // "Restore retired items" checkbox first.
         const active = activate === undefined ? section.active !== false : activate && section.active !== false;
+        const partGuideline = (form.partGuidelines || {})[section.part] ?? null;
         const payload = {
           code, form_family: form.backendFamily, part: section.part,
+          part_guideline: partGuideline,
+          partGuideline: partGuideline,
           section_key: section.sectionKey || code,
           title: fields.length === 1 ? fields[0].label || section.title : section.title,
           max_marks: section.maxMarks ?? 0, active, order: completed,
@@ -101,7 +131,11 @@ export function createSchemaStore(api) {
         };
         if (current) {
           await api.updateFields(code, { fields, tableOrder: payload.tableOrder });
-          await api.update(code, { title: payload.title, part: payload.part, max_marks: payload.max_marks, active, order: payload.order, tableOrder: payload.tableOrder });
+          await api.update(code, {
+            title: payload.title, part: payload.part, max_marks: payload.max_marks,
+            active, order: payload.order, tableOrder: payload.tableOrder,
+            part_guideline: partGuideline, partGuideline: partGuideline
+          });
         } else {
           await api.create(payload);
         }
