@@ -108,6 +108,29 @@ async function verifyMfa(mfaToken, code) {
   return data
 }
 
+async function processSsoToken(token) {
+  if (!token) throw new Error('Missing token for SSO authentication.')
+
+  localStorage.setItem('admin_token', token)
+  try {
+    const profile = await request('/auth/me')
+    if (!profile) throw new Error('Could not retrieve user profile.')
+
+    if (!['admin', 'super_admin'].includes(profile.appraisal_role)) {
+      localStorage.removeItem('admin_token')
+      throw new Error('Your institutional account authenticated successfully, but it does not have administrator privileges.')
+    }
+
+    localStorage.setItem('admin_profile', JSON.stringify(profile))
+    window.dispatchEvent(new Event('auth-changed'))
+    return { token, profile }
+  } catch (err) {
+    localStorage.removeItem('admin_token')
+    localStorage.removeItem('admin_profile')
+    throw err
+  }
+}
+
 function logout() {
   localStorage.removeItem('admin_token')
   localStorage.removeItem('admin_profile')
@@ -459,4 +482,4 @@ const formSchemas = {
   remove: code => request(`/admin/form-schema/${encodeURIComponent(code)}`, { method: 'DELETE' }),
 }
 
-export const api = { login, logout, getProfile, verifyMfa, users, stats, feedback, config, cycle, pending, submissions, logs, announcements, ai, export: exportData, marks, workflow, schools, designations, workflowTemplates, profile, developer, formSchemas }
+export const api = { login, logout, getProfile, verifyMfa, processSsoToken, users, stats, feedback, config, cycle, pending, submissions, logs, announcements, ai, export: exportData, marks, workflow, schools, designations, workflowTemplates, profile, developer, formSchemas }

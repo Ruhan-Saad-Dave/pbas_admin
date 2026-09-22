@@ -121,6 +121,15 @@ export function blankField(type = 'text') {
     requireCompleteRows: type === 'table' ? false : undefined,
     maxMarks: type === 'table' ? null : undefined,
     guideline: type === 'table' ? '' : undefined,
+    // 'columns' = normal table (headers across the top, repeatable rows).
+    // 'rows' = transposed: each column definition becomes a labeled row
+    // instead, label on the left, one input on the right — a single
+    // fixed set of parameters, not repeatable.
+    layout: type === 'table' ? 'columns' : undefined,
+    // When true and the immediately-preceding table has identical column
+    // names, this table's own header is hidden in preview and it visually
+    // joins onto the table above it as one continuous table.
+    mergeWithPrevious: type === 'table' ? false : undefined,
     isCustom: true,
     active: true,
   };
@@ -135,6 +144,16 @@ export function blankDraft() {
     iconName: FORM_ICON_NAMES[0],
     parts: ['Part A'],
     partGuidelines: {},
+    // Per-part flag: when true, this part's review routes only to the
+    // Registrar, bypassing the HOD -> Director -> Dean -> VC chain. Stored
+    // as registrar_part on every section sharing that part (same denormalized
+    // pattern as partGuidelines, since a Part isn't its own backend row).
+    registrarParts: {},
+    // Per-part flag: when true, faculty does not fill this part themselves —
+    // it's scored directly by higher authority (HOD/Director/Dean/VC), like
+    // Standard Appraisal's reviewer-only Part E. Stored as reviewer_only_part
+    // on every section sharing that part, same denormalized pattern.
+    reviewerOnlyParts: {},
     sections: [],
     published: false,
     createdAt: null,
@@ -237,8 +256,18 @@ function normalizeField(field) {
     active: field.active ?? true,
     maxMarks: field.type === 'table' ? (field.maxMarks ?? null) : field.maxMarks,
     guideline: field.type === 'table' ? (field.guideline ?? '') : field.guideline,
+    layout: field.type === 'table' ? (field.layout || 'columns') : field.layout,
+    mergeWithPrevious: field.type === 'table' ? !!field.mergeWithPrevious : field.mergeWithPrevious,
     columns,
   };
+}
+
+// Two tables' columns are compatible for merging (shared header) only if
+// every non-locked column matches by name, in order — the locked Faculty
+// Score column is allowed to differ in max-marks between them.
+export function columnsCompatibleForMerge(colsA, colsB) {
+  if (!colsA?.length || !colsB?.length || colsA.length !== colsB.length) return false;
+  return colsA.every((c, i) => (c.name || '').trim() === (colsB[i]?.name || '').trim());
 }
 
 // A locked Faculty Score column's "Total Marks per Row" is only required input

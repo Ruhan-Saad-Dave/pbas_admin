@@ -1,14 +1,17 @@
-import { lazy, useState, useEffect } from 'react'
+import { lazy, Suspense, useState, useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import MainLayout from './layout/MainLayout'
 import RequireAuth from './components/RequireAuth'
 import Login from './pages/Login'
-import MigrateBucketPage from './pages/developer/MigrateBucketPage'
-import BackupPage from './pages/developer/BackupPage'
-import TransitionPage from './pages/developer/TransitionPage'
+import { Loading } from './components/LoadingState'
 import { api } from './api/client'
 
 const ExperimentalSandboxPage = lazy(() => import('./pages/developer/sandbox'))
+const SampleDemoRoute = lazy(() => import('./pages/developer/sandbox/SampleDemoRoute'))
+
+const MigrateBucketPage = lazy(() => import('./pages/developer/MigrateBucketPage'))
+const BackupPage        = lazy(() => import('./pages/developer/BackupPage'))
+const TransitionPage    = lazy(() => import('./pages/developer/TransitionPage'))
 
 
 // ── Lazy-loaded pages — each splits into its own JS chunk ──────────────────────
@@ -48,9 +51,6 @@ const EditProfilePage       = lazy(() => import('./pages/profile/EditProfilePage
 const HistoryPage           = lazy(() => import('./pages/history/HistoryPage'))
 const MonitoringPage        = lazy(() => import('./pages/monitoring/MonitoringPage'))
 
-import { SandboxProvider } from './pages/developer/sandbox/SandboxContext'
-import SampleDemoTab from './pages/developer/sandbox/SampleDemoTab'
-
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem('admin_token'));
 
@@ -81,9 +81,9 @@ export default function App() {
           <Route element={<RequireAuth />}>
             {isExperimental && (
               <Route path="developer/sandbox/sample-demo" element={
-                <SandboxProvider>
-                  <SampleDemoTab />
-                </SandboxProvider>
+                <Suspense fallback={<Loading />}>
+                  <SampleDemoRoute />
+                </Suspense>
               } />
             )}
             {/* MainLayout contains the Suspense boundary for all lazy pages */}

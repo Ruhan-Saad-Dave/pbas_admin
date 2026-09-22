@@ -574,7 +574,7 @@ export default function OverviewPage() {
       {error   && <ApiError message={error} />}
 
       {!loading && !error && (
-        <>
+        <div key={`${year}|${selectedSchool}`} className="page-enter">
           {/* ── KPI row ─────────────────────────────────────────────────────── */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
             <KPI label={isNT ? 'Non-Teaching Staff' : isSchool ? `${selectedSchool} Faculty` : 'Total Faculty'}
@@ -1182,7 +1182,7 @@ export default function OverviewPage() {
               )}
             </div>
           </Card>
-        </>
+        </div>
       )}
     </div>
   );
