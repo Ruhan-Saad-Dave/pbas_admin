@@ -71,6 +71,8 @@ export default function Login() {
   const [otpCode, setOtpCode] = useState('');
   const [mfaLoading, setMfaLoading] = useState(false);
 
+  const { isConfigured: isSsoConfigured } = getKeycloakConfig();
+
   useEffect(() => {
     if (localStorage.getItem('admin_token')) {
       navigate('/', { replace: true });
@@ -261,7 +263,7 @@ export default function Login() {
           </div>
 
           {/* SSO Button for Admin */}
-          {!mfaRequired && (
+          {!mfaRequired && isSsoConfigured && (
             <div style={{ marginBottom: 22 }}>
               <button
                 type="button"
